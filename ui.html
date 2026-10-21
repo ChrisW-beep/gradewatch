@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grade Watcher</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>.hidden{display:none}</style><!-- keeps show/hide working if the Tailwind CDN is blocked -->
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased min-h-screen">
+<main class="max-w-md mx-auto px-6 py-8">
+
+  <header class="flex items-center gap-3 mb-6">
+    <svg class="h-11 w-11 shrink-0 drop-shadow-sm" viewBox="0 0 1024 1024" aria-hidden="true">
+      <!-- same artwork as icon.ico -->
+      <rect x="40" y="40" width="944" height="944" rx="220" fill="#4f46e5"/>
+      <path fill="#fff" d="M512 250l330 160-330 160-330-160z"/>
+      <path fill="#fff" d="M312 495h400v185h-400z"/>
+      <ellipse cx="512" cy="680" rx="200" ry="70" fill="#fff"/>
+      <path fill="#4f46e5" d="M512 580l200-94H312z"/>
+      <path fill="#fff" d="M512 550l160-75H352z"/>
+      <path stroke="#fff" stroke-width="34" d="M772 440v230"/>
+      <ellipse cx="772" cy="685" rx="32" ry="35" fill="#fff"/>
+    </svg>
+    <div>
+      <h1 class="text-xl font-semibold leading-tight">Grade Watcher</h1>
+      <p class="text-sm text-slate-500">Get a phone alert when your kids' grades change.</p>
+    </div>
+  </header>
+
+  <!-- Setup form -->
+  <form id="form" class="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-6 space-y-5" novalidate>
+    <div>
+      <label for="district" class="block text-sm font-medium mb-1">School district</label>
+      <input id="district" required spellcheck="false" autocapitalize="off" placeholder="e.g. lacey"
+        class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+      <p class="text-xs text-slate-500 mt-1">The word after <span class="font-mono">fridayparentportal.com/</span> in your portal link. You can also paste the whole link.</p>
+    </div>
+    <div>
+      <label for="user" class="block text-sm font-medium mb-1">Parent portal username</label>
+      <input id="user" autocomplete="username" required
+        class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+    </div>
+    <div>
+      <label for="password" class="block text-sm font-medium mb-1">Parent portal password</label>
+      <input id="password" type="password" autocomplete="current-password"
+        class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+      <p id="pwHint" class="hidden text-xs text-slate-500 mt-1">Saved. Leave blank to keep your current password.</p>
+      <p class="text-xs text-slate-500 mt-1">Stored securely in Windows Credential Manager.</p>
+    </div>
+    <div>
+      <label for="topic" class="block text-sm font-medium mb-1">Alert channel name</label>
+      <input id="topic" required spellcheck="false"
+        class="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+      <p class="text-xs text-slate-500 mt-1">A private name your phone listens to. Keep it hard to guess.</p>
+    </div>
+    <div>
+      <label for="time" class="block text-sm font-medium mb-1">Check every day at</label>
+      <input id="time" type="time" required
+        class="rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+    </div>
+
+    <div id="error" role="alert" class="hidden rounded-lg bg-rose-50 text-rose-700 ring-1 ring-rose-200 px-3 py-2 text-sm"></div>
+
+    <button id="saveBtn" type="submit"
+      class="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 font-medium text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-wait">
+      <svg id="spinner" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" class="opacity-25"/><path fill="currentColor" class="opacity-75" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+      <span id="btnText">Save and start</span>
+    </button>
+    <p id="busyNote" class="hidden text-center text-xs text-slate-500" aria-live="polite">Logging in and reading grades. This takes about a minute.</p>
+  </form>
+
+  <!-- Success -->
+  <section id="done" class="hidden bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 p-6" aria-live="polite">
+    <div class="flex items-center gap-2 text-emerald-700 mb-4">
+      <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+      <h2 class="text-lg font-semibold">You're all set</h2>
+    </div>
+    <p class="text-sm text-slate-600 mb-4">One last step, on your phone:</p>
+    <ol class="space-y-3 text-sm">
+      <li class="flex gap-3"><span class="h-6 w-6 shrink-0 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center text-xs font-semibold">1</span>
+        <span>Install the free <b>ntfy</b> app from the App Store or Google Play.</span></li>
+      <li class="flex gap-3"><span class="h-6 w-6 shrink-0 rounded-full bg-indigo-100 text-indigo-700 grid place-items-center text-xs font-semibold">2</span>
+        <span>Tap <b>+</b> and subscribe to this channel:</span></li>
+    </ol>
+    <div class="mt-3 flex items-center gap-2">
+      <code id="topicOut" class="flex-1 rounded-lg bg-slate-100 px-3 py-2 font-mono text-sm select-all"></code>
+      <button id="copyBtn" type="button" class="rounded-lg ring-1 ring-slate-300 px-3 py-2 text-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500">Copy</button>
+    </div>
+    <p class="mt-4 text-sm text-slate-600">Your kids' current grades are already waiting there. After this, Grade Watcher checks every day at <b id="timeOut"></b> and only alerts you when something changes. You can close this window.</p>
+    <button id="editBtn" type="button" class="mt-5 text-sm font-medium text-indigo-600 hover:text-indigo-500">Change settings</button>
+  </section>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmtTime = t => { const [h, m] = t.split(":").map(Number); return `${(h % 12) || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; };
+
+function busy(on) {
+  $("saveBtn").disabled = on;
+  $("spinner").classList.toggle("hidden", !on);
+  $("busyNote").classList.toggle("hidden", !on);
+  $("btnText").textContent = on ? "Checking grades…" : "Save and start";
+}
+function showError(msg) { $("error").textContent = msg; $("error").classList.toggle("hidden", !msg); }
+
+window.addEventListener("pywebviewready", async () => {
+  const c = await window.pywebview.api.get_config();
+  $("district").value = c.district; $("user").value = c.user; $("topic").value = c.topic; $("time").value = c.time;
+  $("pwHint").classList.toggle("hidden", !c.has_password);
+  (!c.district ? $("district") : c.user ? $("password") : $("user")).focus();
+});
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  showError(""); busy(true);
+  try {
+    const r = await window.pywebview.api.save({
+      district: $("district").value, user: $("user").value, password: $("password").value, topic: $("topic").value, time: $("time").value });
+    if (r.error) return showError(r.error);
+    $("topicOut").textContent = $("topic").value.trim();
+    $("timeOut").textContent = fmtTime($("time").value);
+    $("form").classList.add("hidden"); $("done").classList.remove("hidden");
+  } catch (err) {
+    showError("Something went wrong: " + err);
+  } finally { busy(false); }
+});
+
+$("copyBtn").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("topicOut").textContent); $("copyBtn").textContent = "Copied"; }
+  catch { $("copyBtn").textContent = "Select & copy"; }
+  setTimeout(() => $("copyBtn").textContent = "Copy", 1500);
+});
+$("editBtn").addEventListener("click", () => { $("done").classList.add("hidden"); $("form").classList.remove("hidden"); $("password").value = ""; });
+</script>
+</body>
+</html>

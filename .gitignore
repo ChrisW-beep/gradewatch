@@ -1,0 +1,14 @@
+# Personal data - real grades, page dumps with student names/IDs
+grades_state.json
+grades_*.html
+gradebook_*.html
+login_debug.png
+error.log
+run.log
+
+# Build output
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
