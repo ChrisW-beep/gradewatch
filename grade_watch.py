@@ -13,6 +13,7 @@ Run `python grade_watch.py --show` to log in and print what it scrapes (no alert
 Run `python grade_watch.py --test` to check the diff logic without logging in.
 """
 import json, os, re, sys, urllib.request
+from urllib.parse import urljoin
 from pathlib import Path
 
 BASE = "https://www.fridayparentportal.com/portal/"
@@ -33,9 +34,15 @@ def first_name(s):
     return (s.split(", ", 1)[1] if ", " in s else s).split()[0]
 
 
-def scrape_gradebook(page):
+def scrape_gradebook(page, want_mp=None):
+    """Returns (student name, marking period shown, course rows, {course key: assignments page link}).
+    want_mp switches the page to that marking period first; the portal remembers the choice for the session."""
     page.goto(GRADEBOOK_URL)
     page.wait_for_load_state("networkidle")
+    if want_mp and page.locator("select[name=selectMP]").input_value(timeout=3000) != str(want_mp):
+        with page.expect_navigation():  # the dropdown submits its form on change
+            page.select_option("select[name=selectMP]", str(want_mp))
+        page.wait_for_load_state("networkidle")
     body = page.inner_text("body")
     m = re.search(r"([A-Z][\w'.-]+(?: [A-Z][\w'.-]+)+)\s+Grade:\s*\d+", body)
     name = m.group(1) if m else "Unknown"
@@ -43,14 +50,45 @@ def scrape_gradebook(page):
         mp = page.locator("select").first.input_value(timeout=3000)
     except Exception:
         mp = "?"
-    rows = {}
+    rows, links = {}, {}
     for tr in page.query_selector_all("tr"):
         cells = [c.inner_text().strip() for c in tr.query_selector_all("td")]
         # course rows look like: "English 9 Honors\nENE1HF / 02" | "100.00/ 100" | teacher
         # second line "ENE1HF / 02" marks a real course row (skips the outer "Current Average" row)
         if len(cells) >= 2 and re.match(r"\d+(\.\d+)?\s*/", cells[1]) and re.search(r"\n\s*\S+\s*/\s*\d+", cells[0]):
-            rows[f"{first_name(name)} | MP{mp} | {cells[0].splitlines()[0]}"] = " ".join(cells[1].split())
-    return name, rows
+            key = f"{first_name(name)} | MP{mp} | {cells[0].splitlines()[0]}"
+            rows[key] = " ".join(cells[1].split())
+            a = tr.query_selector("a[href*='gradebookdetail.cfm']")
+            if a:
+                links[key] = a.get_attribute("href")
+    return name, mp, rows, links
+
+
+def scrape_assignments(page, href, course_key):
+    """One course's assignments page (for the marking period the session is on).
+    Ungraded assignments are skipped so a grade showing up later alerts as new."""
+    page.goto(urljoin(BASE, href))
+    page.wait_for_load_state("networkidle")
+    # each assignment row may have a ">" button that expands a hidden row holding its description
+    found = page.eval_on_selector_all("#mainTable > tbody > tr:not(.collapse):not(.table-row-subheader)", """trs => trs.map(tr => {
+        const b = tr.querySelector('button[data-target]');
+        const d = b && document.querySelector(b.dataset.target + ' td.text-left');
+        return {id: b ? b.dataset.target : '', desc: d ? d.textContent : '', cells: [...tr.cells].map(c => c.innerText)};
+    })""")
+    rows = {}
+    for f in found:
+        c = [" ".join(x.split()) for x in f["cells"]]
+        if len(c) < 4 or not re.search(r"[A-Za-z0-9]", c[2]):  # c = title, due date, grade, total points
+            continue
+        desc = " ".join(f["desc"].split())
+        label = f"{c[0]} - {desc}" if desc and desc != c[0] else c[0]
+        # same title twice in one course: tell them apart by due date, then by the portal's row id
+        for extra in ("", f" ({c[1]})", f" ({c[1]}) {f['id']}"):
+            key = f"{course_key} | {label}{extra}"
+            if key not in rows:
+                break
+        rows[key] = f"{c[2]} / {c[3]}" if c[3] else c[2]
+    return rows
 
 
 def scrape_grades_page(page, name):
@@ -101,7 +139,7 @@ def switch_to_next(page, seen):
 
 def scrape():
     from playwright.sync_api import sync_playwright
-    rows, empty, seen = {}, [], set()
+    rows, empty, seen, current, cur = {}, [], set(), {}, None
     with sync_playwright() as p:
         # Edge ships with Windows, so the packaged app needs no browser download
         page = p.chromium.launch(channel="msedge" if os.name == "nt" else None).new_page()
@@ -118,10 +156,20 @@ def scrape():
         page.press("input[name=password]", "Enter")
         page.wait_for_load_state("networkidle")
         for _ in range(10):  # guard against looping forever if switching silently fails
-            name, kid_rows = scrape_gradebook(page)
+            name, mp, kid_rows, _ = scrape_gradebook(page)
             if first_name(name) in seen:
                 break
             seen.add(first_name(name))
+            if cur is None and mp.isdigit():  # only the first load after login shows the real current MP
+                cur = int(mp)
+            if kid_rows and cur:
+                current[first_name(name)] = cur
+                kid_rows = {}
+                for m in range(1, cur + 1):  # earlier marking periods too, so their final grades get reported
+                    _, _, mp_rows, links = scrape_gradebook(page, m)
+                    kid_rows.update(mp_rows)
+                    for course_key, href in links.items():
+                        kid_rows.update(scrape_assignments(page, href, course_key))
             if not kid_rows:
                 kid_rows, courses = scrape_grades_page(page, name)
                 if not courses:  # neither page had courses; keep the HTML so the layout can be diagnosed
@@ -130,7 +178,7 @@ def scrape():
             rows.update(kid_rows)
             if not switch_to_next(page, seen):
                 break
-    return rows, empty
+    return rows, empty, current
 
 
 def first_num(s):
@@ -150,31 +198,76 @@ def diff(old, new):
     return msgs
 
 
+def chunks(lines, limit=3500):
+    """ntfy rejects messages over 4096 bytes, so long updates go out as several notifications."""
+    out, size = [[]], 0
+    for line in lines:
+        line = line.encode()[:limit].decode(errors="ignore")
+        n = len(line.encode()) + 1
+        if out[-1] and size + n > limit:
+            out.append([])
+            size = 0
+        out[-1].append(line)
+        size += n
+    return ["\n".join(c) for c in out if c]
+
+
 def notify(text):
-    req = urllib.request.Request(f"https://ntfy.sh/{os.environ['NTFY_TOPIC']}",
-                                 data=text.encode(), headers={"Title": "Grade update"})
-    urllib.request.urlopen(req, timeout=30)
+    for part in chunks(text.split("\n")):
+        req = urllib.request.Request(f"https://ntfy.sh/{os.environ['NTFY_TOPIC']}",
+                                     data=part.encode(), headers={"Title": "Grade update"})
+        urllib.request.urlopen(req, timeout=30)
 
 
-def build(old, new, empty):
-    """Returns (state_to_save, messages). A kid whose page failed keeps last run's grades
-    so a scrape glitch never wipes them or fires fake 'new' alerts next time."""
-    failed = {first_name(e) for e in empty}
-    state = {**{k: v for k, v in (old or {}).items() if k.split(" | ")[0] in failed}, **new}
+FINALS = "_finals_sent"  # state key listing the "Kid | MP1" marking periods whose final grades were already sent
+
+
+def is_assignment(k):
+    return k.count(" | ") > 2  # "Kid | MP1 | Course | Assignment" vs "Kid | MP1 | Course"
+
+
+def build(old, new, empty, current=None):
+    """Returns (state_to_save, messages). current = {kid: current marking period number}.
+    Grades missing from this run are kept from the last one, so a scrape glitch never wipes them
+    or fires fake 'new' alerts next time."""
+    current = current or {}
+    prev = {k: v for k, v in (old or {}).items() if k != FINALS}
+    sent = set((old or {}).get(FINALS, []))
+    for kid, cur in current.items():
+        # on file for a later MP than the current one = last school year; start that kid fresh
+        if any(int(m.group(1)) > cur for k in prev if (m := re.match(rf"{re.escape(kid)} \| MP(\d+) \|", k))):
+            prev = {k: v for k, v in prev.items() if not k.startswith(kid + " | ")}
+            sent = {s for s in sent if not s.startswith(kid + " | ")}
+    state = {**prev, **new}
     msgs = [f"⚠️ Couldn't read grades for {e} - page layout may have changed" for e in empty]
+    finals, covered = [], set()
+    for kid, cur in current.items():
+        for m in range(1, cur):  # marking periods that have ended
+            tag = f"{kid} | MP{m}"
+            rows = {k: v for k, v in new.items() if k.startswith(tag + " | ") and not is_assignment(k)}
+            if rows and tag not in sent:
+                finals += [f"🏁 {kid} MP{m} final grades:"] + [f"  {k.split(' | ', 2)[2]}: {v}" for k, v in rows.items()]
+                sent.add(tag)
+                covered |= set(rows)
     if old is None:
-        msgs += ["📋 Grade watcher is set up. Current grades:"] + [f"{k}: {v}" for k, v in new.items()]
+        msgs += ["📋 Grade watcher is set up. Current grades:"]
+        msgs += [f"{k}: {v}" for k, v in new.items() if k not in covered and not is_assignment(k)]
     else:
-        msgs += diff(old, state)
-    return state, msgs
+        # first run with assignments: record them quietly instead of announcing every old one as new
+        seeding = not any(is_assignment(k) for k in prev)
+        msgs += diff(prev, {k: v for k, v in state.items() if k not in covered and not (seeding and is_assignment(k))})
+        if seeding and any(is_assignment(k) for k in new):
+            msgs.append(f"📝 Now also watching individual assignments ({sum(map(is_assignment, new))} graded so far)")
+    state[FINALS] = sorted(sent)
+    return state, msgs + finals
 
 
 def main():
     old = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else None
-    new, empty = scrape()
-    state, msgs = build(old, new, empty)
+    new, empty, current = scrape()
+    state, msgs = build(old, new, empty, current)
     if msgs:
-        notify("\n".join(msgs)[:3500])
+        notify("\n".join(msgs))
     if new:  # nothing scraped at all = login/site problem; keep the old snapshot
         STATE.write_text(json.dumps(state, indent=1), encoding="utf-8")
 
@@ -194,9 +287,34 @@ if __name__ == "__main__":
         # first run sends the full summary
         _, msgs = build(None, {"Jordan | MP1 | Art 7": "100.00/ 100"}, [])
         assert msgs[0].startswith("📋") and "Art 7" in msgs[1], msgs
+        # MP1 ended (now MP2) and its grades were never sent: one final summary, sent once
+        o = {"Avery | MP2 | Geometry H": "90.00/ 90"}
+        n = {"Avery | MP1 | Geometry H": "96.70/ 97", "Avery | MP2 | Geometry H": "90.00/ 90",
+             "Avery | MP1 | Geometry H | Quiz 1 - Angles": "95", "Avery | MP2 | Geometry H | Quiz 5": "18 / 20"}
+        state, msgs = build(o, n, [], {"Avery": 2})
+        assert msgs == ["📝 Now also watching individual assignments (2 graded so far)",
+                        "🏁 Avery MP1 final grades:", "  Geometry H: 96.70/ 97"], msgs
+        assert state[FINALS] == ["Avery | MP1"]
+        # next day: finals not repeated; a new assignment, a changed one and a late MP1 correction alert
+        n2 = {**n, "Avery | MP2 | Geometry H | Quiz 6": "100", "Avery | MP2 | Geometry H | Quiz 5": "20 / 20",
+              "Avery | MP1 | Geometry H": "97.00/ 97"}
+        state2, msgs = build(state, n2, [], {"Avery": 2})
+        assert sorted(s[0] for s in msgs) == sorted(["🆕", "📈", "📈"]), msgs
+        # a course page that failed to load keeps its assignments on file (no fake "new" later)
+        state3, msgs = build(state2, {"Avery | MP2 | Geometry H": "90.00/ 90"}, [], {"Avery": 2})
+        assert not msgs and state3["Avery | MP2 | Geometry H | Quiz 6"] == "100", msgs
+        # new school year (back to MP1): last year's grades and sent-markers are dropped
+        state4, msgs = build(state3, {"Avery | MP1 | Algebra 2": "88.00/ 88"}, [], {"Avery": 1})
+        assert state4 == {"Avery | MP1 | Algebra 2": "88.00/ 88", FINALS: []} and msgs[0].startswith("🆕"), (state4, msgs)
+        # first run mid-year: current grades, then finals for the ended MP, no assignment flood
+        _, msgs = build(None, n, [], {"Avery": 2})
+        assert msgs == ["📋 Grade watcher is set up. Current grades:", "Avery | MP2 | Geometry H: 90.00/ 90",
+                        "🏁 Avery MP1 final grades:", "  Geometry H: 96.70/ 97"], msgs
+        parts = chunks(["📈 " + "x" * 1000] * 8)
+        assert len(parts) == 3 and all(len(p.encode()) <= 3500 for p in parts), [len(p) for p in parts]
         print("ok", out)
     elif "--show" in sys.argv:
-        rows, empty = scrape()
-        print(json.dumps(rows, indent=1), "\nno grades for:", empty)
+        rows, empty, current = scrape()
+        print(json.dumps(rows, indent=1), "\nno grades for:", empty, "\ncurrent marking period:", current)
     else:
         main()

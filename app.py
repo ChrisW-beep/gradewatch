@@ -62,7 +62,7 @@ def run_check():
                           PORTAL_PASS=keyring.get_password(APP, cfg["user"]) or "")
         grade_watch.main()
         state = json.loads(grade_watch.STATE.read_text(encoding="utf-8")) if grade_watch.STATE.exists() else {}
-        log(f"ok - {len(state)} grades on file")
+        log(f"ok - {sum(not k.startswith('_') for k in state)} grades on file")
         return None
     except Exception as e:
         log(f"FAILED - {e}")

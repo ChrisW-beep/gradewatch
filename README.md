@@ -9,13 +9,17 @@ Get a phone notification when your kids' grades change on a **Friday Parent Port
 - Runs on **your own Windows PC** — your password never leaves it (stored in Windows Credential Manager).
 - Once a day (Windows Task Scheduler), it logs in, reads every linked student's **Gradebook** (or the report-card **Grades** page for elementary students), and compares with the last check.
 - Changes are pushed to your phone with the free [ntfy](https://ntfy.sh) app. No changes = no notification.
+- Gradebook students also get an alert for each **individual assignment** grade that is posted or changed.
+- When a marking period ends, its **final grades** are sent once (also the first time it runs, for any marking period that already ended). Later corrections to an ended marking period still alert.
 - First run sends one summary of all current grades.
 
 Example alert:
 
 ```
-📉 Avery | MP1 | AP World History: 89.25/ 89 → 85.00/ 85
-🆕 Jordan | MP1 | Spanish 1: 91.15/ 91
+📉 Avery | MP2 | AP World History: 89.25/ 89 → 85.00/ 85
+🆕 Avery | MP2 | Geometry H | Quiz 5 - Triangles: 18 / 20
+🏁 Jordan MP1 final grades:
+  Spanish 1: 91.15/ 91
 ```
 
 ## Setup (parents)
@@ -67,7 +71,7 @@ Command-line only (no app): set `PORTAL_DISTRICT`, `PORTAL_USER`, `PORTAL_PASS`,
 ## Limitations
 
 - Tested on one district (Lacey Township, NJ). Other districts use the same portal software but may lay pages out differently — issues welcome.
-- Watches course averages and report-card grades, not individual assignments.
+- Individual assignments and end-of-marking-period summaries need the Gradebook page; students who only have the report-card Grades page get report-card grades only.
 - Windows only.
 
 ## License
